@@ -1,0 +1,127 @@
+@import "tailwindcss";
+
+/* ─── Design tokens ─────────────────────────────────────────────────────── */
+:root {
+  /* Light theme */
+  --background: 0 0% 100%;
+  --foreground: 240 10% 4%;
+  --card: 0 0% 98%;
+  --card-foreground: 240 10% 4%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 240 10% 4%;
+  --primary: 262 83% 58%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 240 4% 96%;
+  --secondary-foreground: 240 6% 10%;
+  --muted: 240 4% 96%;
+  --muted-foreground: 240 4% 46%;
+  --accent: 262 83% 58%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 240 6% 90%;
+  --input: 240 6% 90%;
+  --ring: 262 83% 58%;
+  --radius: 0.75rem;
+  --sidebar-bg: 240 4% 97%;
+  --glow: 262 83% 58%;
+}
+
+.dark {
+  /* Dark theme — ElevenLabs inspired */
+  --background: 0 0% 4%;
+  --foreground: 0 0% 95%;
+  --card: 0 0% 7%;
+  --card-foreground: 0 0% 95%;
+  --popover: 0 0% 7%;
+  --popover-foreground: 0 0% 95%;
+  --primary: 262 83% 65%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 0 0% 12%;
+  --secondary-foreground: 0 0% 90%;
+  --muted: 0 0% 12%;
+  --muted-foreground: 0 0% 55%;
+  --accent: 262 83% 65%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 0 0% 14%;
+  --input: 0 0% 14%;
+  --ring: 262 83% 65%;
+  --sidebar-bg: 0 0% 5%;
+  --glow: 262 83% 65%;
+}
+
+/* ─── Base ───────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  min-height: 100vh;
+}
+
+/* ─── Scrollbar ──────────────────────────────────────────────────────────── */
+* { scrollbar-width: thin; scrollbar-color: hsl(var(--border)) transparent; }
+*::-webkit-scrollbar { width: 5px; height: 5px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 10px; }
+
+/* ─── Animations ─────────────────────────────────────────────────────────── */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 20px hsl(var(--glow) / 0.3); }
+  50%       { box-shadow: 0 0 40px hsl(var(--glow) / 0.6); }
+}
+@keyframes shimmer {
+  0%   { background-position: -200% center; }
+  100% { background-position:  200% center; }
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.animate-fade-in  { animation: fade-in 0.4s ease forwards; }
+.animate-glow     { animation: glow-pulse 2s ease-in-out infinite; }
+.animate-spin     { animation: spin 1s linear infinite; }
+
+/* ─── Glassmorphism card ─────────────────────────────────────────────────── */
+.glass {
+  background: hsl(var(--card) / 0.7);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid hsl(var(--border));
+}
+
+/* ─── Gradient text ──────────────────────────────────────────────────────── */
+.gradient-text {
+  background: linear-gradient(135deg, hsl(var(--primary)), #c084fc, #818cf8);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ─── Shimmer button ─────────────────────────────────────────────────────── */
+.btn-shimmer {
+  position: relative;
+  background: linear-gradient(135deg, hsl(var(--primary)), #7c3aed, hsl(var(--primary)));
+  background-size: 200% auto;
+  transition: background-position 0.4s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+.btn-shimmer:hover {
+  background-position: right center;
+  box-shadow: 0 0 24px hsl(var(--primary) / 0.5);
+  transform: translateY(-1px);
+}
+.btn-shimmer:active { transform: translateY(0); }
+
+/* ─── SQL code block ─────────────────────────────────────────────────────── */
+.sql-code {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
