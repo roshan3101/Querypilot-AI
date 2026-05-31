@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc, cast, Date
+from sqlalchemy import select, func, desc, cast, Date, text
 from app.db.base import get_db
 from app.api.deps import get_current_user
 from app.models.user import User
@@ -16,27 +16,29 @@ async def get_dashboard_stats(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    uid = current_user.id
+
     total = await db.execute(
-        select(func.count(QueryHistory.id)).where(QueryHistory.user_id == current_user.id)
+        select(func.count(QueryHistory.id)).where(QueryHistory.user_id == uid)
     )
     total_queries = total.scalar() or 0
 
     successful = await db.execute(
         select(func.count(QueryHistory.id)).where(
-            QueryHistory.user_id == current_user.id, QueryHistory.is_successful == True
+            QueryHistory.user_id == uid, QueryHistory.is_successful == True  # noqa: E712
         )
     )
     successful_queries = successful.scalar() or 0
 
     avg_time = await db.execute(
         select(func.avg(QueryHistory.execution_time_ms)).where(
-            QueryHistory.user_id == current_user.id, QueryHistory.execution_time_ms.isnot(None)
+            QueryHistory.user_id == uid, QueryHistory.execution_time_ms.isnot(None)
         )
     )
     avg_exec = round(avg_time.scalar() or 0, 2)
 
     conns = await db.execute(
-        select(func.count(DBConnection.id)).where(DBConnection.user_id == current_user.id)
+        select(func.count(DBConnection.id)).where(DBConnection.user_id == uid)
     )
     total_connections = conns.scalar() or 0
 
@@ -45,30 +47,32 @@ async def get_dashboard_stats(
             cast(QueryHistory.created_at, Date).label("date"),
             func.count(QueryHistory.id).label("count"),
         )
-        .where(QueryHistory.user_id == current_user.id)
+        .where(QueryHistory.user_id == uid)
         .group_by(cast(QueryHistory.created_at, Date))
         .order_by(cast(QueryHistory.created_at, Date).desc())
         .limit(30)
     )
     queries_by_day = [{"date": str(row.date), "count": row.count} for row in daily]
 
-    tables_result = await db.execute(
-        select(QueryHistory.tables_used, func.count(QueryHistory.id).label("count"))
-        .where(QueryHistory.user_id == current_user.id, QueryHistory.tables_used.isnot(None))
-        .group_by(QueryHistory.tables_used)
-        .order_by(desc("count"))
-        .limit(20)
-    )
-    table_counts: dict[str, int] = {}
-    for row in tables_result:
-        if isinstance(row.tables_used, list):
-            for t in row.tables_used:
-                table_counts[t] = table_counts.get(t, 0) + row.count
-    most_queried = sorted(
-        [{"table": k, "count": v} for k, v in table_counts.items()],
-        key=lambda x: x["count"],
-        reverse=True,
-    )[:10]
+    # json type has no equality operator in PostgreSQL — use jsonb_array_elements_text
+    # to unnest the tables_used array and count individual table names.
+    tables_sql = text("""
+        SELECT t.table_name, COUNT(*) AS cnt
+        FROM query_history qh,
+             jsonb_array_elements_text(qh.tables_used::jsonb) AS t(table_name)
+        WHERE qh.user_id = :uid
+          AND qh.tables_used IS NOT NULL
+          AND qh.tables_used != 'null'
+          AND qh.tables_used != '[]'
+        GROUP BY t.table_name
+        ORDER BY cnt DESC
+        LIMIT 10
+    """)
+    try:
+        tables_result = await db.execute(tables_sql, {"uid": uid})
+        most_queried = [{"table": row.table_name, "count": row.cnt} for row in tables_result]
+    except Exception:
+        most_queried = []
 
     return DashboardStats(
         total_queries=total_queries,
