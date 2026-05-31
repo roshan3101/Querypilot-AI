@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { connectionsApi } from "@/lib/api";
@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import toast from "react-hot-toast";
+import { toast } from "sonner";
 import { Plus, Trash2, Server, TestTube, X, Link2, FormInput, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 

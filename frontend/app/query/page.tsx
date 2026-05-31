@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { connectionsApi, queriesApi } from "@/lib/api";
@@ -9,7 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import toast from "react-hot-toast";
+import { toast } from "sonner";
 import { Send, Play, Sparkles, BarChart2, Table2, Code2, Lightbulb, Zap, ChevronRight } from "lucide-react";
 import { formatMs, cn } from "@/lib/utils";
 

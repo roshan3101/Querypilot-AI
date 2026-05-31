@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
@@ -8,7 +8,7 @@ import {
 import { useAuthStore } from "@/store/auth";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { cn } from "@/lib/utils";
-import toast from "react-hot-toast";
+import { toast } from "sonner";
 
 const navItems = [
   { href: "/dashboard",   label: "Dashboard",     icon: LayoutDashboard, desc: "Overview & analytics" },

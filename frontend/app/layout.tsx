@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
-import { Toaster } from "react-hot-toast";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -17,18 +16,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className={inter.className}>
         <Providers>
           {children}
-          <Toaster
-            position="top-right"
-            toastOptions={{
-              style: {
-                background: "hsl(var(--popover))",
-                color: "hsl(var(--foreground))",
-                border: "1px solid hsl(var(--border))",
-                borderRadius: "12px",
-                fontSize: "14px",
-              },
-            }}
-          />
         </Providers>
       </body>
     </html>

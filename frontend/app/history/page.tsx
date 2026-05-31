@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { queriesApi } from "@/lib/api";
@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { formatMs } from "@/lib/utils";
 import { Trash2, RotateCcw, ChevronDown, ChevronUp, CheckCircle, XCircle, Clock, Rows } from "lucide-react";
 import { useRouter } from "next/navigation";
-import toast from "react-hot-toast";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
 interface HistoryItem {
