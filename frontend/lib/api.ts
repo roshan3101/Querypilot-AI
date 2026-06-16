@@ -45,13 +45,18 @@ export const connectionsApi = {
 
 // Queries
 export const queriesApi = {
-  generate: (data: { connection_id: number; natural_language: string }) =>
+  generate: (data: { connection_id: number; natural_language: string; previous_question?: string; previous_sql?: string }) =>
     api.post("/queries/generate", data),
   execute: (data: { connection_id: number; sql: string; history_id?: number }) =>
     api.post("/queries/execute", data),
   history: (limit = 50, offset = 0) =>
     api.get(`/queries/history?limit=${limit}&offset=${offset}`),
   deleteHistory: (id: number) => api.delete(`/queries/history/${id}`),
+  // Saved queries
+  saveQuery: (data: { name: string; description?: string; sql: string }) =>
+    api.post("/queries/saved", data),
+  listSaved: () => api.get("/queries/saved"),
+  deleteSaved: (id: number) => api.delete(`/queries/saved/${id}`),
 };
 
 // Dashboard
@@ -69,3 +74,46 @@ export const csvApi = {
   tables: () => api.get("/csv/tables"),
   deleteTable: (id: number) => api.delete(`/csv/tables/${id}`),
 };
+
+// Streaming SQL generation via fetch + ReadableStream
+export async function* streamGenerateSql(data: {
+  connection_id: number;
+  natural_language: string;
+  previous_question?: string;
+  previous_sql?: string;
+}): AsyncGenerator<{ type: string; content?: string; message?: string; data?: Record<string, unknown> }> {
+  const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+  const res = await fetch(`${API_BASE}/queries/generate/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(data),
+  });
+
+  if (!res.ok || !res.body) {
+    throw new Error("Stream request failed");
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        try {
+          yield JSON.parse(line.slice(6));
+        } catch {
+          // skip malformed
+        }
+      }
+    }
+  }
+}

@@ -1,8 +1,13 @@
 import json
+import time
 import hashlib
 from typing import Optional
 from loguru import logger
 from app.core.config import settings
+
+# In-memory schema cache — always available, no Redis required
+_schema_cache: dict[str, tuple[list, float]] = {}
+_SCHEMA_TTL = 300  # 5 minutes
 
 
 class CacheService:
@@ -42,6 +47,24 @@ class CacheService:
             await client.setex(key, ttl, json.dumps(value))
         except Exception as e:
             logger.warning(f"Cache set failed: {e}")
+
+    # --- Schema cache (in-memory, always on) ---
+
+    def get_schema(self, connection_id: int) -> Optional[list]:
+        key = str(connection_id)
+        entry = _schema_cache.get(key)
+        if entry:
+            data, expires_at = entry
+            if time.time() < expires_at:
+                return data
+            del _schema_cache[key]
+        return None
+
+    def set_schema(self, connection_id: int, schema: list):
+        _schema_cache[str(connection_id)] = (schema, time.time() + _SCHEMA_TTL)
+
+    def invalidate_schema(self, connection_id: int):
+        _schema_cache.pop(str(connection_id), None)
 
     async def close(self):
         if self._client:

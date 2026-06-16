@@ -1,8 +1,22 @@
 import json
-from typing import Optional
+from typing import Optional, AsyncGenerator
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 from app.core.config import settings
+
+# Approximate cost per 1K tokens (input, output) in USD
+_COST_TABLE: dict[str, tuple[float, float]] = {
+    "gpt-4o-mini": (0.00015, 0.0006),
+    "gpt-4o": (0.0025, 0.010),
+    "gpt-4-turbo": (0.01, 0.03),
+    "gemini-2.5-flash": (0.0000075, 0.00003),
+    "gemini-1.5-pro": (0.00125, 0.005),
+}
+
+
+def _estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+    rates = _COST_TABLE.get(model, (0.001, 0.002))
+    return round(rates[0] * prompt_tokens / 1000 + rates[1] * completion_tokens / 1000, 6)
 
 
 class LLMService:
@@ -23,12 +37,27 @@ class LLMService:
                     lines.append(f"  FK: {table['table_name']}.{fk['column']} -> {fk['ref_table']}.{fk['ref_column']}")
         return "\n".join(lines)
 
-    def _make_sql_prompt(self, natural_language: str, schema_context: str) -> str:
+    def _make_sql_prompt(
+        self,
+        natural_language: str,
+        schema_context: str,
+        previous_question: Optional[str] = None,
+        previous_sql: Optional[str] = None,
+    ) -> str:
+        followup_section = ""
+        if previous_question and previous_sql:
+            followup_section = f"""
+PREVIOUS QUESTION: {previous_question}
+PREVIOUS SQL:
+{previous_sql}
+
+The user is asking a follow-up. Build upon or refine the previous query where appropriate.
+"""
         return f"""You are an expert PostgreSQL query generator. Given the database schema and a natural language question, generate a safe SELECT query.
 
 DATABASE SCHEMA:
 {schema_context}
-
+{followup_section}
 RULES:
 - Only generate SELECT or WITH (CTE) queries
 - Never use DROP, DELETE, UPDATE, INSERT, ALTER, CREATE, TRUNCATE
@@ -64,20 +93,62 @@ Respond with JSON:
 }}"""
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
-    async def generate_sql(self, natural_language: str, schema: list[dict]) -> dict:
+    async def generate_sql(
+        self,
+        natural_language: str,
+        schema: list[dict],
+        previous_question: Optional[str] = None,
+        previous_sql: Optional[str] = None,
+    ) -> dict:
         schema_context = self._build_schema_context(schema)
-        prompt = self._make_sql_prompt(natural_language, schema_context)
-        response_text = await self._call_llm(prompt)
-        return self._parse_json_response(response_text)
+        prompt = self._make_sql_prompt(natural_language, schema_context, previous_question, previous_sql)
+        response_text, usage = await self._call_llm(prompt)
+        result = self._parse_json_response(response_text)
+        result["token_usage"] = usage
+        return result
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     async def optimize_sql(self, sql: str, schema: list[dict]) -> dict:
         schema_context = self._build_schema_context(schema)
         prompt = self._make_optimize_prompt(sql, schema_context)
-        response_text = await self._call_llm(prompt)
+        response_text, _ = await self._call_llm(prompt)
         return self._parse_json_response(response_text)
 
-    async def _call_llm(self, prompt: str) -> str:
+    async def generate_sql_stream(
+        self,
+        natural_language: str,
+        schema: list[dict],
+        previous_question: Optional[str] = None,
+        previous_sql: Optional[str] = None,
+    ) -> AsyncGenerator[str, None]:
+        """Yields SSE-formatted strings. Final event contains full parsed result."""
+        schema_context = self._build_schema_context(schema)
+        prompt = self._make_sql_prompt(natural_language, schema_context, previous_question, previous_sql)
+
+        yield f"data: {json.dumps({'type': 'status', 'message': 'Generating SQL...'})}\n\n"
+
+        full_text = ""
+        usage: dict = {}
+
+        if self.provider == "openai":
+            async for chunk, u in self._stream_openai(prompt):
+                full_text += chunk
+                usage = u
+                yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+        else:
+            # Non-streaming providers: call normally, then emit full text at once
+            full_text, usage = await self._call_llm(prompt)
+            yield f"data: {json.dumps({'type': 'token', 'content': full_text})}\n\n"
+
+        try:
+            result = self._parse_json_response(full_text)
+            result["token_usage"] = usage
+            yield f"data: {json.dumps({'type': 'done', 'data': result})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    async def _call_llm(self, prompt: str) -> tuple[str, dict]:
+        """Returns (response_text, token_usage_dict)."""
         if self.provider == "openai":
             return await self._call_openai(prompt)
         elif self.provider == "gemini":
@@ -87,7 +158,7 @@ Respond with JSON:
         else:
             raise ValueError(f"Unsupported LLM provider: {self.provider}")
 
-    async def _call_openai(self, prompt: str) -> str:
+    async def _call_openai(self, prompt: str) -> tuple[str, dict]:
         from openai import AsyncOpenAI
         client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
         response = await client.chat.completions.create(
@@ -97,9 +168,47 @@ Respond with JSON:
             max_tokens=2048,
             response_format={"type": "json_object"},
         )
-        return response.choices[0].message.content
+        text = response.choices[0].message.content
+        usage = {}
+        if response.usage:
+            pt = response.usage.prompt_tokens
+            ct = response.usage.completion_tokens
+            usage = {
+                "prompt_tokens": pt,
+                "completion_tokens": ct,
+                "total_tokens": pt + ct,
+                "estimated_cost_usd": _estimate_cost(self.model, pt, ct),
+            }
+        return text, usage
 
-    async def _call_gemini(self, prompt: str) -> str:
+    async def _stream_openai(self, prompt: str):
+        """Async generator yielding (chunk_text, usage_dict) tuples. usage is only populated on last chunk."""
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        stream = await client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=2048,
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+        usage: dict = {}
+        async for chunk in stream:
+            if chunk.usage:
+                pt = chunk.usage.prompt_tokens
+                ct = chunk.usage.completion_tokens
+                usage = {
+                    "prompt_tokens": pt,
+                    "completion_tokens": ct,
+                    "total_tokens": pt + ct,
+                    "estimated_cost_usd": _estimate_cost(self.model, pt, ct),
+                }
+            delta = chunk.choices[0].delta.content if chunk.choices else None
+            if delta:
+                yield delta, usage
+
+    async def _call_gemini(self, prompt: str) -> tuple[str, dict]:
         import google.generativeai as genai
         genai.configure(api_key=settings.GEMINI_API_KEY)
         model = genai.GenerativeModel(
@@ -110,9 +219,19 @@ Respond with JSON:
             ),
         )
         response = await model.generate_content_async(prompt)
-        return response.text
+        usage: dict = {}
+        if hasattr(response, "usage_metadata") and response.usage_metadata:
+            pt = response.usage_metadata.prompt_token_count or 0
+            ct = response.usage_metadata.candidates_token_count or 0
+            usage = {
+                "prompt_tokens": pt,
+                "completion_tokens": ct,
+                "total_tokens": pt + ct,
+                "estimated_cost_usd": _estimate_cost(self.model or "gemini-2.5-flash", pt, ct),
+            }
+        return response.text, usage
 
-    async def _call_openrouter(self, prompt: str) -> str:
+    async def _call_openrouter(self, prompt: str) -> tuple[str, dict]:
         import httpx
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -129,7 +248,18 @@ Respond with JSON:
                 timeout=60.0,
             )
             data = response.json()
-            return data["choices"][0]["message"]["content"]
+            text = data["choices"][0]["message"]["content"]
+            usage: dict = {}
+            if "usage" in data:
+                pt = data["usage"].get("prompt_tokens", 0)
+                ct = data["usage"].get("completion_tokens", 0)
+                usage = {
+                    "prompt_tokens": pt,
+                    "completion_tokens": ct,
+                    "total_tokens": pt + ct,
+                    "estimated_cost_usd": _estimate_cost(self.model or "openai/gpt-4o-mini", pt, ct),
+                }
+            return text, usage
 
     def _parse_json_response(self, text: str) -> dict:
         try:

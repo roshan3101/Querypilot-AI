@@ -1,14 +1,17 @@
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, desc
 from app.db.base import get_db
 from app.api.deps import get_current_user
 from app.models.user import User
 from app.models.db_connection import DBConnection
 from app.models.query_history import QueryHistory
+from app.models.saved_query import SavedQuery
 from app.schemas.query import (
     QueryRequest, SQLGenerateResponse, QueryExecuteRequest,
-    QueryResult, QueryHistoryOut
+    QueryResult, QueryHistoryOut, SavedQueryCreate, SavedQueryOut,
 )
 from app.services.llm_service import llm_service
 from app.services.db_service import fetch_schema, execute_query
@@ -30,6 +33,16 @@ async def _get_connection(connection_id: int, user_id: int, db: AsyncSession) ->
     return conn
 
 
+async def _resolve_schema(conn: DBConnection, password: str) -> list:
+    """Return cached schema or fetch and cache it."""
+    cached = cache_service.get_schema(conn.id)
+    if cached is not None:
+        return cached
+    schema = await fetch_schema(conn.host, conn.port, conn.database, conn.username, password)
+    cache_service.set_schema(conn.id, schema)
+    return schema
+
+
 @router.post("/generate", response_model=SQLGenerateResponse)
 async def generate_sql(
     payload: QueryRequest,
@@ -38,15 +51,26 @@ async def generate_sql(
 ):
     conn = await _get_connection(payload.connection_id, current_user.id, db)
     cache_key = f"{conn.id}:{payload.natural_language}"
-    cached = await cache_service.get("sql_gen", cache_key)
-    if cached:
-        return SQLGenerateResponse(**cached)
-
     password = decrypt_password(conn.encrypted_password)
-    schema = await fetch_schema(conn.host, conn.port, conn.database, conn.username, password)
+
+    # Parallel: check SQL result cache AND start schema lookup simultaneously
+    sql_cached_task = asyncio.create_task(cache_service.get("sql_gen", cache_key))
+    schema_task = asyncio.create_task(_resolve_schema(conn, password))
+
+    sql_cached = await sql_cached_task
+    if sql_cached:
+        schema_task.cancel()
+        return SQLGenerateResponse(**sql_cached)
+
+    schema = await schema_task
 
     try:
-        result = await llm_service.generate_sql(payload.natural_language, schema)
+        result = await llm_service.generate_sql(
+            payload.natural_language,
+            schema,
+            previous_question=payload.previous_question,
+            previous_sql=payload.previous_sql,
+        )
     except Exception as e:
         logger.error(f"LLM generation error: {e}")
         raise HTTPException(status_code=500, detail=f"LLM generation failed: {str(e)}")
@@ -54,6 +78,7 @@ async def generate_sql(
     sql = result.get("sql", "")
     explanation = result.get("explanation", "")
     tables_used = result.get("tables_used", [])
+    token_usage = result.get("token_usage")
 
     opt_result = None
     try:
@@ -69,6 +94,7 @@ async def generate_sql(
         explanation=explanation,
         optimized_sql=opt_result.get("optimized_sql") if opt_result else None,
         tables_used=tables_used,
+        token_usage=token_usage,
         is_successful=True,
     )
     db.add(history)
@@ -80,9 +106,40 @@ async def generate_sql(
         tables_used=tables_used,
         optimized_sql=opt_result.get("optimized_sql") if opt_result else None,
         optimization_notes=opt_result.get("notes") if opt_result else None,
+        token_usage=token_usage,
     )
     await cache_service.set("sql_gen", cache_key, response.model_dump(), ttl=1800)
     return response
+
+
+@router.post("/generate/stream")
+async def generate_sql_stream(
+    payload: QueryRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    conn = await _get_connection(payload.connection_id, current_user.id, db)
+    password = decrypt_password(conn.encrypted_password)
+    schema = await _resolve_schema(conn, password)
+
+    async def event_stream():
+        try:
+            async for event in llm_service.generate_sql_stream(
+                payload.natural_language,
+                schema,
+                previous_question=payload.previous_question,
+                previous_sql=payload.previous_sql,
+            ):
+                yield event
+        except Exception as e:
+            import json
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/execute", response_model=QueryResult)
@@ -155,4 +212,50 @@ async def delete_history(
     if not hist or hist.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="History item not found")
     await db.delete(hist)
+    await db.commit()
+
+
+# --- Saved Queries ---
+
+@router.post("/saved", response_model=SavedQueryOut, status_code=201)
+async def save_query(
+    payload: SavedQueryCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    sq = SavedQuery(
+        user_id=current_user.id,
+        name=payload.name,
+        description=payload.description,
+        sql=payload.sql,
+    )
+    db.add(sq)
+    await db.commit()
+    await db.refresh(sq)
+    return sq
+
+
+@router.get("/saved", response_model=list[SavedQueryOut])
+async def list_saved_queries(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(SavedQuery)
+        .where(SavedQuery.user_id == current_user.id)
+        .order_by(desc(SavedQuery.created_at))
+    )
+    return result.scalars().all()
+
+
+@router.delete("/saved/{saved_id}", status_code=204)
+async def delete_saved_query(
+    saved_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    sq = await db.get(SavedQuery, saved_id)
+    if not sq or sq.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Saved query not found")
+    await db.delete(sq)
     await db.commit()

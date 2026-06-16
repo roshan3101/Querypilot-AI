@@ -7,6 +7,8 @@ class QueryRequest(BaseModel):
     connection_id: int
     natural_language: str
     auto_execute: bool = False
+    previous_question: Optional[str] = None
+    previous_sql: Optional[str] = None
 
 
 class SQLGenerateResponse(BaseModel):
@@ -15,6 +17,7 @@ class SQLGenerateResponse(BaseModel):
     tables_used: list[str]
     optimized_sql: Optional[str] = None
     optimization_notes: Optional[str] = None
+    token_usage: Optional[dict] = None
 
 
 class QueryExecuteRequest(BaseModel):
@@ -43,6 +46,23 @@ class QueryHistoryOut(BaseModel):
     error_message: Optional[str]
     chart_type: Optional[str]
     tables_used: Optional[list]
+    token_usage: Optional[dict]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class SavedQueryCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    sql: str
+
+
+class SavedQueryOut(BaseModel):
+    id: int
+    name: str
+    description: Optional[str]
+    sql: str
     created_at: datetime
 
     model_config = {"from_attributes": True}

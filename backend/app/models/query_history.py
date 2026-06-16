@@ -19,4 +19,5 @@ class QueryHistory(Base):
     chart_type = Column(String, nullable=True)
     result_preview = Column(JSON, nullable=True)
     tables_used = Column(JSON, nullable=True)
+    token_usage = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
